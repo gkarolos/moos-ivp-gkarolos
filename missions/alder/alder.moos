@@ -20,7 +20,7 @@ ProcessConfig = ANTLER
   Run = pMarineViewer	@ NewConsole = false
   Run = uProcessWatch @ NewConsole = false
   Run = pHelmIvP      @ NewConsole = false
-  //Run = pOdometry     @ NewConsole = false
+  Run = pOdometry     @ NewConsole = false
 }
 
 //------------------------------------------
@@ -138,6 +138,15 @@ ProcessConfig = pMarineViewer
   BUTTON_ONE = DEPLOY # DEPLOY=true
   BUTTON_ONE = MOOS_MANUAL_OVERIDE=false # RETURN=false
   BUTTON_TWO = RETURN # RETURN=true
+}
+
+//------------------------------------------
+// pOdometry config block
+
+ProcessConfig = pOdometry
+{
+  AppTick   = 4
+  CommsTick = 4
 }
 
 //------------------------------------------
