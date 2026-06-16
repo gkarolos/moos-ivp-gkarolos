@@ -1,0 +1,181 @@
+//-------  FILE: bravo.bhv   (Lab 5 - Assignment 6: Bravo UUV Surface)  -------
+
+initialize   DEPLOY = false
+initialize   RETURN = false
+initialize   LOITER_REGION = west
+initialize   AT_SURFACE = false
+initialize   SIT = false
+
+//----------------------------------------------
+// WEST Loiter at (100,-75). Active while LOITER_REGION=west.
+// Stays active through the ascent (so it supplies heading+speed to
+// climb under power); only pauses while parked at the surface (SIT=true).
+Behavior = BHV_Loiter
+{
+  name      = loiter_west
+  pwt       = 100
+  condition = DEPLOY = true
+  condition = RETURN = false
+  condition = LOITER_REGION = west
+  condition = SIT = false
+  updates   = LOITER_WEST_UPDATE
+
+  duration            = 150
+  perpetual           = true
+  duration_idle_decay = false
+  endflag             = LOITER_REGION = east
+
+  polygon   = format=radial, x=100, y=-75, radius=30, pts=8
+  speed     = 2.5
+  clockwise = false
+
+  visual_hints = vertex_size=2, edge_color=light_blue
+  visual_hints = nextpt_color=yellow, nextpt_vertex_size=4
+}
+
+//----------------------------------------------
+// EAST Loiter at (160,-50). Active while LOITER_REGION=east.
+Behavior = BHV_Loiter
+{
+  name      = loiter_east
+  pwt       = 100
+  condition = DEPLOY = true
+  condition = RETURN = false
+  condition = LOITER_REGION = east
+  condition = SIT = false
+  updates   = LOITER_EAST_UPDATE
+
+  duration            = 150
+  perpetual           = true
+  duration_idle_decay = false
+  endflag             = LOITER_REGION = west
+
+  polygon   = format=radial, x=160, y=-50, radius=20, pts=8
+  speed     = 2.5
+  clockwise = false
+
+  visual_hints = vertex_size=2, edge_color=pink
+  visual_hints = nextpt_color=yellow, nextpt_vertex_size=4
+}
+
+//----------------------------------------------
+// DEEP depth (30 m) while in the WEST region and submerged.
+Behavior = BHV_ConstantDepth
+{
+  name      = const_depth_west
+  pwt       = 100
+  condition = DEPLOY = true
+  condition = RETURN = false
+  condition = LOITER_REGION = west
+  condition = AT_SURFACE = false
+  duration  = no-time-limit
+
+  depth     = 30
+}
+
+//----------------------------------------------
+// SHALLOW depth (10 m) while in the EAST region and submerged.
+Behavior = BHV_ConstantDepth
+{
+  name      = const_depth_east
+  pwt       = 100
+  condition = DEPLOY = true
+  condition = RETURN = false
+  condition = LOITER_REGION = east
+  condition = AT_SURFACE = false
+  duration  = no-time-limit
+
+  depth     = 10
+}
+
+//----------------------------------------------
+// PERIODIC SURFACING via two Timers + state vars AT_SURFACE / SIT.
+// Submerged 200s -> surface; sit at surface 60s -> dive; repeat.
+// (Deliberately NOT using BHV_PeriodicSurface.)
+
+// Dive timer: counts 200s while submerged, then orders a surface.
+Behavior = BHV_Timer
+{
+  name      = dive_timer
+  condition = DEPLOY = true
+  condition = RETURN = false
+  condition = AT_SURFACE = false
+
+  duration            = 200
+  perpetual           = true
+  duration_idle_decay = false
+  endflag             = AT_SURFACE = true
+}
+
+// Surface timer: counts 60s ONLY once actually at the surface
+// (NAV_DEPTH<1). duration_idle_decay=false lets it wait, undecayed,
+// through the ascent, then count a clean 60s and order a dive.
+Behavior = BHV_Timer
+{
+  name      = surface_timer
+  condition = DEPLOY = true
+  condition = RETURN = false
+  condition = AT_SURFACE = true
+  condition = NAV_DEPTH < 1
+
+  duration            = 60
+  perpetual           = true
+  duration_idle_decay = false
+  endflag             = AT_SURFACE = false
+}
+
+// During the whole surfacing excursion, pull the vehicle to depth 0.
+// The loiter keeps it moving on the way up, so the elevator can climb.
+Behavior = BHV_ConstantDepth
+{
+  name      = depth_surface
+  pwt       = 100
+  condition = DEPLOY = true
+  condition = RETURN = false
+  condition = AT_SURFACE = true
+  duration  = no-time-limit
+
+  depth     = 0
+}
+
+// Once AT the surface (NAV_DEPTH<1): hold station at ~0 speed. StationKeep
+// supplies BOTH heading and speed, so the helm always has a complete
+// decision (the bug before was: no heading behavior -> helm won't actuate).
+// runflag pauses the loiters; idleflag resumes them once we dive again.
+Behavior = BHV_StationKeep
+{
+  name      = hold_surface
+  pwt       = 100
+  condition = DEPLOY = true
+  condition = RETURN = false
+  condition = AT_SURFACE = true
+  condition = NAV_DEPTH < 1
+
+  runflag   = SIT = true
+  idleflag  = SIT = false
+
+  center_activate = true
+  inner_radius    = 4
+  outer_radius    = 15
+  outer_speed     = 1.0
+  transit_speed   = 1.3
+  swing_time      = 4
+}
+
+//----------------------------------------------
+// Return home to (0,0) once RETURN=true (poked manually)
+Behavior = BHV_Waypoint
+{
+  name      = waypt_return
+  pwt       = 100
+  condition = RETURN = true
+  condition = DEPLOY = true
+  perpetual = true
+  endflag   = RETURN = false
+  endflag   = DEPLOY = false
+
+  speed          = 2.5
+  capture_radius = 5.0
+  slip_radius    = 15.0
+  point          = 0,0
+}
