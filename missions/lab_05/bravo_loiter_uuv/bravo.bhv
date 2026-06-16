@@ -1,0 +1,101 @@
+//-------  FILE: bravo.bhv   (Lab 5 - Assignment 5: Bravo UUV)  -------
+
+initialize   DEPLOY = false
+initialize   RETURN = false
+initialize   LOITER_REGION = west
+
+//----------------------------------------------
+// WEST Loiter at (100,-75). Active while LOITER_REGION=west.
+// After 150s it flips the region to east (and thereby ends itself).
+Behavior = BHV_Loiter
+{
+  name      = loiter_west
+  pwt       = 100
+  condition = DEPLOY = true
+  condition = RETURN = false
+  condition = LOITER_REGION = west
+  updates   = LOITER_WEST_UPDATE
+
+  duration            = 150
+  perpetual           = true
+  duration_idle_decay = false
+  endflag             = LOITER_REGION = east
+
+  polygon   = format=radial, x=100, y=-75, radius=30, pts=8
+  speed     = 2.5
+  clockwise = false
+
+  visual_hints = vertex_size=2, edge_color=light_blue
+  visual_hints = nextpt_color=yellow, nextpt_vertex_size=4
+}
+
+//----------------------------------------------
+// EAST Loiter at (160,-50). Active while LOITER_REGION=east.
+// After 150s it flips the region back to west.
+Behavior = BHV_Loiter
+{
+  name      = loiter_east
+  pwt       = 100
+  condition = DEPLOY = true
+  condition = RETURN = false
+  condition = LOITER_REGION = east
+  updates   = LOITER_EAST_UPDATE
+
+  duration            = 150
+  perpetual           = true
+  duration_idle_decay = false
+  endflag             = LOITER_REGION = west
+
+  polygon   = format=radial, x=160, y=-50, radius=20, pts=8
+  speed     = 2.5
+  clockwise = false
+
+  visual_hints = vertex_size=2, edge_color=pink
+  visual_hints = nextpt_color=yellow, nextpt_vertex_size=4
+}
+
+//----------------------------------------------
+// DEEP depth (30 m) while in the WEST region.
+Behavior = BHV_ConstantDepth
+{
+  name      = const_depth_west
+  pwt       = 100
+  condition = DEPLOY = true
+  condition = RETURN = false
+  condition = LOITER_REGION = west
+  duration  = no-time-limit
+
+  depth     = 30
+}
+
+//----------------------------------------------
+// SHALLOW depth (10 m) while in the EAST region.
+Behavior = BHV_ConstantDepth
+{
+  name      = const_depth_east
+  pwt       = 100
+  condition = DEPLOY = true
+  condition = RETURN = false
+  condition = LOITER_REGION = east
+  duration  = no-time-limit
+
+  depth     = 10
+}
+
+//----------------------------------------------
+// Return home to (0,0) once RETURN=true (poked manually)
+Behavior = BHV_Waypoint
+{
+  name      = waypt_return
+  pwt       = 100
+  condition = RETURN = true
+  condition = DEPLOY = true
+  perpetual = true
+  endflag   = RETURN = false
+  endflag   = DEPLOY = false
+
+  speed          = 2.5
+  capture_radius = 5.0
+  slip_radius    = 15.0
+  point          = 0,0
+}
