@@ -58,3 +58,11 @@ lib/
 # Temp files (emacs, etc)
 *#
 *~
+
+# MOOS runtime logs and stray backup files
+MOOSLog_*/
+LOG_*/
+*.moos++
+*.alog
+*.blog
+*.ylog
