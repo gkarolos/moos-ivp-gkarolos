@@ -1,11 +1,11 @@
 //-------------------------------------------------
 // NAME: M. Benjamin, MIT CSAIL
-// FILE: alpha.moos
+// FILE: bravo.moos
 //-------------------------------------------------
 
 ServerHost   = localhost
 ServerPort   = 9000
-Community    = alpha
+Community    = bravo
 MOOSTimeWarp = 1
 
 // Forest Lake
