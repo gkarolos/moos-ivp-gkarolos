@@ -1,0 +1,175 @@
+//-----------------------------------------------
+// Helm Behavior file   (Lab 6 - Exercise 5: Henry Gilda AUTO Refuel)
+//
+// Same refuel machinery as Ex4, plus an AUTOMATIC trigger: the fuel_clock Timer
+// (bottom of file) counts down 300s of LOITERING and then posts REFUEL_NEEDED
+// =true on its own. Its condition is MODE==LOITERING with duration_idle_decay=
+// false, so the countdown PAUSES whenever the vehicle is not loitering (e.g.
+// while station-keeping = no fuel burned) and resumes on return to loiter.
+// perpetual=true re-arms it, so it auto-refuels indefinitely. The manual REFUEL
+// button still works too.
+//
+// ----- (Ex4 refuel-on-command description, still in effect) -----
+// When REFUEL_NEEDED=true, the vehicle enters REFUELING mode: while
+// REFUEL_WAIT=false it drives home to its launch point (refuel_transit); on
+// arrival that behavior's endflag sets REFUEL_WAIT=true, so it station-keeps
+// there (refuel_station) while a 60s Timer (refuel_timer) counts down; the
+// Timer then clears REFUEL_NEEDED/REFUEL_WAIT and the vehicle resumes loitering.
+//
+// Mode precedence (first match wins): STATION-KEEPING > RETURNING > REFUELING >
+// LOITERING. So the STATION button and the plain RETURN button still behave
+// exactly as in the baseline and override a refueling cycle.
+
+initialize   DEPLOY  = true
+initialize   RETURN  = false
+initialize   STATION_KEEP = false
+initialize   LOITER  = true
+initialize   REFUEL_NEEDED = false
+initialize   REFUEL_WAIT   = false
+
+set MODE = ACTIVE {
+  DEPLOY = true
+} INACTIVE
+
+set MODE = STATION-KEEPING {
+  MODE = ACTIVE
+  STATION_KEEP = true
+}
+
+set MODE = RETURNING {
+  MODE = ACTIVE
+  RETURN = true
+}
+
+set MODE = REFUELING {
+  MODE = ACTIVE
+  REFUEL_NEEDED = true
+}
+
+set MODE = LOITERING {
+  MODE = ACTIVE
+  LOITER = true
+}
+
+
+//----------------------------------------------
+Behavior = BHV_Loiter
+{
+  name      = loiter
+  pwt       = 100
+  condition = MODE==LOITERING
+
+   post_suffix = A
+         speed = 1.3
+     clockwise = false
+        radius = 8.0
+     nm_radius = 15.0
+       polygon = radial::$(LOITER_POS), radius=20, pts=8, snap=1, label=$(VNAME)_LOITER
+
+  visual_hints = nextpt_color=white, nextpt_lcolor=khaki
+  visual_hints = edge_color=orange, vertex_color=white
+  visual_hints = edge_size=1, vertex_size=2
+}
+
+
+//----------------------------------------------
+Behavior = BHV_Waypoint
+{
+  name      = waypt_return
+  pwt       = 100
+  condition = MODE==RETURNING
+  endflag   = STATION_KEEP = true
+  perpetual = true
+
+      speed = 1.3
+     radius = 3.0
+  nm_radius = 15.0
+     points = $(START_POS)
+       lead = 8
+}
+
+//----------------------------------------------
+Behavior = BHV_StationKeep
+{
+  name      = station-keep
+  pwt       = 100
+  condition = MODE==STATION-KEEPING
+
+   center_activate = true
+      inner_radius = 5
+      outer_radius = 10
+       outer_speed = 1.0
+     transit_speed = 1.3
+        swing_time = 7
+      visual_hints = vertex_size=0, edge_color=gray50
+}
+
+//----------------------------------------------
+// REFUEL phase 1: drive home to the launch point. On arrival the endflag sets
+// REFUEL_WAIT=true, which switches the sub-mode to WAITING.
+Behavior = BHV_Waypoint
+{
+  name      = refuel_transit
+  pwt       = 100
+  condition = MODE==REFUELING
+  condition = REFUEL_WAIT = false
+  endflag   = REFUEL_WAIT = true
+  perpetual = true
+
+      speed = 1.3
+     radius = 5.0
+  nm_radius = 25.0
+     points = $(START_POS)
+       lead = 8
+}
+
+//----------------------------------------------
+// REFUEL phase 2: hold station at the launch point while refueling.
+Behavior = BHV_StationKeep
+{
+  name      = refuel_station
+  pwt       = 100
+  condition = MODE==REFUELING
+  condition = REFUEL_WAIT = true
+
+   center_activate = true
+      inner_radius = 5
+      outer_radius = 10
+       outer_speed = 1.0
+     transit_speed = 1.3
+        swing_time = 7
+      visual_hints = vertex_size=0, edge_color=green
+}
+
+//----------------------------------------------
+// REFUEL phase 2 timer: count 60s while WAITING, then clear the refuel flags so
+// the vehicle leaves REFUELING and resumes LOITERING. perpetual=true re-arms it
+// for the next refuel command.
+Behavior = BHV_Timer
+{
+  name                = refuel_timer
+  condition           = MODE==REFUELING
+  condition           = REFUEL_WAIT = true
+  duration            = 60
+  perpetual           = true
+  duration_idle_decay = false
+  endflag             = REFUEL_NEEDED = false
+  endflag             = REFUEL_WAIT   = false
+}
+
+//----------------------------------------------
+// AUTO-REFUEL "fuel clock" (Ex5): counts 300s of LOITERING, then auto-posts
+// REFUEL_NEEDED=true to start a refuel run. condition=MODE==LOITERING means it
+// only counts while actually loitering; duration_idle_decay=false makes it
+// PAUSE (hold its elapsed count) whenever the vehicle is station-keeping,
+// returning, or refueling -- i.e. no fuel burned off-mission. perpetual=true
+// re-arms it after each refuel so the cycle repeats indefinitely.
+Behavior = BHV_Timer
+{
+  name                = fuel_clock
+  condition           = MODE==LOITERING
+  duration            = 300
+  perpetual           = true
+  duration_idle_decay = false
+  endflag             = REFUEL_NEEDED = true
+}
