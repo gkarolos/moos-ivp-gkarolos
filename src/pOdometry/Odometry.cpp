@@ -18,12 +18,16 @@ using namespace std;
 
 Odometry::Odometry()
 {
+  m_depth_thresh   = 0;
+
   m_first_reading  = true;
   m_current_x      = 0;
   m_current_y      = 0;
   m_previous_x     = 0;
   m_previous_y     = 0;
+  m_current_depth  = 0;
   m_total_distance = 0;
+  m_dist_at_depth  = 0;
 
   m_got_x = false;
   m_got_y = false;
@@ -58,8 +62,9 @@ bool Odometry::OnNewMail(MOOSMSG_LIST &NewMail)
     bool   mstr  = msg.IsString();
 #endif
 
-    if(key == "NAV_X")      { m_current_x = msg.GetDouble(); m_got_x = true; }
-    else if(key == "NAV_Y") { m_current_y = msg.GetDouble(); m_got_y = true; }
+    if(key == "NAV_X")          { m_current_x = msg.GetDouble(); m_got_x = true; }
+    else if(key == "NAV_Y")     { m_current_y = msg.GetDouble(); m_got_y = true; }
+    else if(key == "NAV_DEPTH") { m_current_depth = msg.GetDouble(); }
 
     else if(key != "APPCAST_REQ") // handled by AppCastingMOOSApp
       reportRunWarning("Unhandled Mail: " + key);
@@ -68,9 +73,15 @@ bool Odometry::OnNewMail(MOOSMSG_LIST &NewMail)
     // Done here in OnNewMail (not Iterate) so distance is correct even though
     // NAV posts at 10 Hz while Iterate runs at 4 Hz.
     if(m_got_x && m_got_y) {
-      if(!m_first_reading)
-        m_total_distance += hypot(m_current_x - m_previous_x,
-                                  m_current_y - m_previous_y);
+      if(!m_first_reading) {
+        double leg = hypot(m_current_x - m_previous_x,
+                           m_current_y - m_previous_y);
+        m_total_distance += leg;
+        // Only count this leg toward the at-depth total when we are deeper
+        // than the configured threshold.
+        if(m_current_depth > m_depth_thresh)
+          m_dist_at_depth += leg;
+      }
       m_first_reading = false;
       m_previous_x = m_current_x;
       m_previous_y = m_current_y;
@@ -100,6 +111,7 @@ bool Odometry::Iterate()
   AppCastingMOOSApp::Iterate();
 
   Notify("ODOMETRY_DIST", m_total_distance);
+  Notify("ODOMETRY_DIST_AT_DEPTH", m_dist_at_depth);
 
   AppCastingMOOSApp::PostReport();
   return(true);
@@ -126,11 +138,8 @@ bool Odometry::OnStartUp()
     string value = line;
 
     bool handled = false;
-    if(param == "foo") {
-      handled = true;
-    }
-    else if(param == "bar") {
-      handled = true;
+    if(param == "depth_thresh") {
+      handled = setDoubleOnString(m_depth_thresh, value);
     }
 
     if(!handled)
@@ -150,6 +159,7 @@ void Odometry::registerVariables()
   AppCastingMOOSApp::RegisterVariables();
   Register("NAV_X", 0);
   Register("NAV_Y", 0);
+  Register("NAV_DEPTH", 0);
 }
 
 
@@ -158,10 +168,13 @@ void Odometry::registerVariables()
 
 bool Odometry::buildReport() 
 {
-  m_msgs << "Total distance traveled: " << doubleToString(m_total_distance, 2) << " m" << endl;
-  m_msgs << "Current position (x, y): (" << doubleToString(m_current_x, 2)
-         << ", " << doubleToString(m_current_y, 2) << ")" << endl;
-  m_msgs << "First reading received:  " << (m_first_reading ? "no (waiting)" : "yes") << endl;
+  m_msgs << "Total distance traveled:    " << doubleToString(m_total_distance, 2) << " m" << endl;
+  m_msgs << "Distance traveled at depth: " << doubleToString(m_dist_at_depth, 2)
+         << " m  (NAV_DEPTH > " << doubleToString(m_depth_thresh, 2) << " m)" << endl;
+  m_msgs << "Current position (x, y, d): (" << doubleToString(m_current_x, 2)
+         << ", " << doubleToString(m_current_y, 2)
+         << ", " << doubleToString(m_current_depth, 2) << ")" << endl;
+  m_msgs << "First reading received:     " << (m_first_reading ? "no (waiting)" : "yes") << endl;
 
   return(true);
 }

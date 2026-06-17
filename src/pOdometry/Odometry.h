@@ -29,12 +29,15 @@ class Odometry : public AppCastingMOOSApp
    void registerVariables();
 
  private: // Configuration variables
+   double m_depth_thresh;    // only count distance while NAV_DEPTH > this (default 0)
 
  private: // State variables
    bool   m_first_reading;   // true until we get our very first NAV pair
    double m_current_x,  m_current_y;
    double m_previous_x, m_previous_y;
-   double m_total_distance;
+   double m_current_depth;   // latest NAV_DEPTH
+   double m_total_distance;  // distance traveled overall
+   double m_dist_at_depth;   // distance traveled while deeper than m_depth_thresh
    bool   m_got_x, m_got_y;  // have we seen a fresh X and Y for this pair?
 };
 

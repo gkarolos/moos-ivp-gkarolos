@@ -1,0 +1,229 @@
+//-------  FILE: meta_bravo.bhv   (Lab 5 - Assignment 8: Bravo UUV Odometry)  -------
+//
+// nsplug TEMPLATE -- launch.sh expands $(RETURN_DIST) below (default 200 m;
+// override with ./launch.sh --dist=M) into targ_bravo.bhv.
+//
+// Same UUV / periodic-surfacing mission as A7 (bravo_uuv_fair). The loiters
+// are IDLE for the whole surface excursion (condition AT_SURFACE=false) and
+// with duration_idle_decay=false each region resumes its remaining time after
+// surfacing; BHV_StationKeep holds the vehicle near the surfacing point while
+// depth_surface raises it.
+//
+// NEW for A8: pOdometry publishes ODOMETRY_DIST_AT_DEPTH (distance traveled
+// while NAV_DEPTH > depth_thresh). The return_after_depth_dist Timer below
+// watches that variable and posts RETURN=true once it reaches RETURN_DIST
+// meters. Because the loiters/timers/depth behaviors are already gated on
+// RETURN=false and the return waypoint on RETURN=true, that single flag
+// cleanly stops the survey and sends the vehicle home to (0,0).
+
+initialize   DEPLOY = false
+initialize   RETURN = false
+initialize   LOITER_REGION = west
+initialize   AT_SURFACE = false
+
+//----------------------------------------------
+// WEST Loiter at (100,-75). Active while LOITER_REGION=west and submerged.
+// Idle (paused, no decay) during the whole surface excursion -> fair time.
+Behavior = BHV_Loiter
+{
+  name      = loiter_west
+  pwt       = 100
+  condition = DEPLOY = true
+  condition = RETURN = false
+  condition = LOITER_REGION = west
+  condition = AT_SURFACE = false
+  updates   = LOITER_WEST_UPDATE
+
+  duration            = 150
+  perpetual           = true
+  duration_idle_decay = false
+  endflag             = LOITER_REGION = east
+
+  polygon   = format=radial, x=100, y=-75, radius=30, pts=8
+  speed     = 2.5
+  clockwise = false
+
+  visual_hints = vertex_size=2, edge_color=light_blue
+  visual_hints = nextpt_color=yellow, nextpt_vertex_size=4
+}
+
+//----------------------------------------------
+// EAST Loiter at (160,-50). Active while LOITER_REGION=east and submerged.
+Behavior = BHV_Loiter
+{
+  name      = loiter_east
+  pwt       = 100
+  condition = DEPLOY = true
+  condition = RETURN = false
+  condition = LOITER_REGION = east
+  condition = AT_SURFACE = false
+  updates   = LOITER_EAST_UPDATE
+
+  duration            = 150
+  perpetual           = true
+  duration_idle_decay = false
+  endflag             = LOITER_REGION = west
+
+  polygon   = format=radial, x=160, y=-50, radius=20, pts=8
+  speed     = 2.5
+  clockwise = false
+
+  visual_hints = vertex_size=2, edge_color=pink
+  visual_hints = nextpt_color=yellow, nextpt_vertex_size=4
+}
+
+//----------------------------------------------
+// DEEP depth (30 m) while in the WEST region and submerged.
+Behavior = BHV_ConstantDepth
+{
+  name      = const_depth_west
+  pwt       = 100
+  condition = DEPLOY = true
+  condition = RETURN = false
+  condition = LOITER_REGION = west
+  condition = AT_SURFACE = false
+  duration  = no-time-limit
+
+  depth     = 30
+}
+
+//----------------------------------------------
+// SHALLOW depth (10 m) while in the EAST region and submerged.
+Behavior = BHV_ConstantDepth
+{
+  name      = const_depth_east
+  pwt       = 100
+  condition = DEPLOY = true
+  condition = RETURN = false
+  condition = LOITER_REGION = east
+  condition = AT_SURFACE = false
+  duration  = no-time-limit
+
+  depth     = 10
+}
+
+//----------------------------------------------
+// PERIODIC SURFACING via two Timers + state var AT_SURFACE.
+// Submerged 200s -> surface; sit at surface 60s -> dive; repeat.
+// (Deliberately NOT using BHV_PeriodicSurface.)
+
+// Dive timer: counts 200s while submerged, then orders a surface.
+Behavior = BHV_Timer
+{
+  name      = dive_timer
+  condition = DEPLOY = true
+  condition = RETURN = false
+  condition = AT_SURFACE = false
+
+  duration            = 200
+  perpetual           = true
+  duration_idle_decay = false
+  endflag             = AT_SURFACE = true
+}
+
+// Surface timer: counts 60s ONLY once actually at the surface (NAV_DEPTH<1).
+// duration_idle_decay=false lets it wait, undecayed, through the ascent.
+Behavior = BHV_Timer
+{
+  name      = surface_timer
+  condition = DEPLOY = true
+  condition = RETURN = false
+  condition = AT_SURFACE = true
+  condition = NAV_DEPTH < 1
+
+  duration            = 60
+  perpetual           = true
+  duration_idle_decay = false
+  endflag             = AT_SURFACE = false
+}
+
+//----------------------------------------------
+// SURFACE MANEUVER (active for the whole excursion, AT_SURFACE=true).
+// StationKeep grabs the point where surfacing began (center_activate) and
+// holds the vehicle THERE while it rises and during the 60s wait -- so it
+// stays put near the ascent point instead of driving off. It supplies both
+// heading and speed, so the helm always has a complete decision.
+
+// Pull to the surface for the whole excursion.
+Behavior = BHV_ConstantDepth
+{
+  name      = depth_surface
+  pwt       = 100
+  condition = DEPLOY = true
+  condition = RETURN = false
+  condition = AT_SURFACE = true
+  duration  = no-time-limit
+
+  depth     = 0
+}
+
+// Hold station at the surfacing point: rise here, then wait here (0 speed).
+Behavior = BHV_StationKeep
+{
+  name      = hold_surface
+  pwt       = 100
+  condition = DEPLOY = true
+  condition = RETURN = false
+  condition = AT_SURFACE = true
+
+  center_activate = true
+  inner_radius    = 4
+  outer_radius    = 15
+  outer_speed     = 1.2
+  transit_speed   = 1.5
+  swing_time      = 4
+}
+
+//----------------------------------------------
+// RETURN TRIGGER (A8): post RETURN=true once the vehicle has traveled 200 m
+// at depth (> depth_thresh, set to 25 m in bravo.moos). BHV_Timer produces no
+// course/speed/depth objective, so it just watches the condition and fires its
+// runflag -- which flips the master RETURN switch the rest of the file already
+// keys off of. DEPLOY=true keeps it from re-triggering after the mission ends.
+Behavior = BHV_Timer
+{
+  name      = return_after_depth_dist
+  condition = DEPLOY = true
+  condition = ODOMETRY_DIST_AT_DEPTH >= $(RETURN_DIST)
+
+  duration  = 5
+  perpetual = true
+  runflag   = RETURN = true
+}
+
+//----------------------------------------------
+// SURFACE while returning. The helm domain includes depth:0:100:101, and when
+// RETURN=true every loiter-phase ConstantDepth goes idle -- leaving the depth
+// decision variable unaddressed. The helm then refuses the whole decision
+// (BHV_ERROR MissingDecVars:depth) and posts no DESIRED_* -> the vehicle stalls
+// instead of driving home. This ConstantDepth=0 supplies the missing depth
+// objective during the return, so the vehicle heads home at the surface.
+Behavior = BHV_ConstantDepth
+{
+  name      = depth_return
+  pwt       = 100
+  condition = RETURN = true
+  condition = DEPLOY = true
+  duration  = no-time-limit
+
+  depth     = 0
+}
+
+//----------------------------------------------
+// Return home to (0,0) once RETURN=true (poked manually, or auto-set by the
+// return_after_depth_dist Timer above)
+Behavior = BHV_Waypoint
+{
+  name      = waypt_return
+  pwt       = 100
+  condition = RETURN = true
+  condition = DEPLOY = true
+  perpetual = true
+  endflag   = RETURN = false
+  endflag   = DEPLOY = false
+
+  speed          = 2.5
+  capture_radius = 5.0
+  slip_radius    = 15.0
+  point          = 0,0
+}

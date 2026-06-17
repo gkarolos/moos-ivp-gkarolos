@@ -20,10 +20,10 @@ void showSynopsis()
 {
   blk("SYNOPSIS:                                                       ");
   blk("------------------------------------                            ");
-  blk("  The pOdometry application is used for               ");
-  blk("                                                                ");
-  blk("                                                                ");
-  blk("                                                                ");
+  blk("  The pOdometry application accumulates the total distance       ");
+  blk("  traveled by the vehicle from its NAV_X / NAV_Y position.       ");
+  blk("  It also keeps a separate at-depth total of distance traveled   ");
+  blk("  while NAV_DEPTH exceeds the configured depth_thresh.           ");
   blk("                                                                ");
 }
 
@@ -74,6 +74,8 @@ void showExampleConfigAndExit()
   blk("  AppTick   = 4                                                 ");
   blk("  CommsTick = 4                                                 ");
   blk("                                                                ");
+  blk("  depth_thresh = 25   // count at-depth distance when            ");
+  blk("                      // NAV_DEPTH > this (meters; default 0)     ");
   blk("}                                                               ");
   blk("                                                                ");
   exit(0);
@@ -94,12 +96,15 @@ void showInterfaceAndExit()
   blk("                                                                ");
   blk("SUBSCRIPTIONS:                                                  ");
   blk("------------------------------------                            ");
-  blk("  NODE_MESSAGE = src_node=alpha,dest_node=bravo,var_name=FOO,   ");
-  blk("                 string_val=BAR                                 ");
+  blk("  NAV_X      (double)                                           ");
+  blk("  NAV_Y      (double)                                           ");
+  blk("  NAV_DEPTH  (double)                                           ");
   blk("                                                                ");
   blk("PUBLICATIONS:                                                   ");
   blk("------------------------------------                            ");
-  blk("  Publications are determined by the node message content.      ");
+  blk("  ODOMETRY_DIST           total distance traveled (m)           ");
+  blk("  ODOMETRY_DIST_AT_DEPTH  distance traveled while deeper than   ");
+  blk("                          depth_thresh (m)                      ");
   blk("                                                                ");
   exit(0);
 }
