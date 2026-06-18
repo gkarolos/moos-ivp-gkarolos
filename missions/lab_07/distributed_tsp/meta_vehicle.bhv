@@ -1,0 +1,184 @@
+//-----------------------------------------------
+// Helm Behavior file   (Lab 7 - Distributed TSP: Henry / Gilda)
+//
+// SURVEYING is the underway mode: the waypt_survey BHV_Waypoint visits the
+// points pGenPath assigns to this vehicle. pGenPath posts the greedy tour to
+// TRANSIT_UPDATE (= the behavior's updates var); speed is capped at 1.2 m/s and
+// slip_radius=15 so the vehicle does not loop back for missed points.
+//
+// Refuel machinery carried from Lab 6 (now tuned for Lab 7): the fuel_clock
+// Timer (bottom) counts 600s of SURVEYING then posts REFUEL_NEEDED=true. Its
+// duration_idle_decay=false PAUSES the count while not surveying (station-
+// keeping, returning, refueling) so return time is NOT charged to the tour
+// budget. perpetual=true re-arms it. The manual REFUEL button still works.
+//
+// ----- (refuel-on-command description, still in effect) -----
+// When REFUEL_NEEDED=true, the vehicle enters REFUELING mode: while
+// REFUEL_WAIT=false it drives home to its launch point (refuel_transit); on
+// arrival that behavior's endflag sets REFUEL_WAIT=true, so it station-keeps
+// there (refuel_station) while a 60s Timer (refuel_timer) counts down; the
+// Timer then clears REFUEL_NEEDED/REFUEL_WAIT and the vehicle resumes surveying.
+//
+// Mode precedence (first match wins): STATION-KEEPING > RETURNING > REFUELING >
+// SURVEYING. So the STATION button and the plain RETURN button still behave
+// exactly as in the baseline and override a refueling cycle.
+
+initialize   DEPLOY  = true
+initialize   RETURN  = false
+initialize   STATION_KEEP = false
+initialize   SURVEY  = true
+initialize   REFUEL_NEEDED = false
+initialize   REFUEL_WAIT   = false
+
+set MODE = ACTIVE {
+  DEPLOY = true
+} INACTIVE
+
+set MODE = STATION-KEEPING {
+  MODE = ACTIVE
+  STATION_KEEP = true
+}
+
+set MODE = RETURNING {
+  MODE = ACTIVE
+  RETURN = true
+}
+
+set MODE = REFUELING {
+  MODE = ACTIVE
+  REFUEL_NEEDED = true
+}
+
+set MODE = SURVEYING {
+  MODE = ACTIVE
+  SURVEY = true
+}
+
+
+//----------------------------------------------
+// TSP survey: visit the points assigned to this vehicle. The point list is
+// posted by pGenPath (greedy nearest-neighbour tour) via TRANSIT_UPDATE, which
+// must match pGenPath's update_var. Starts with a placeholder point at the
+// launch position and is overwritten the moment pGenPath posts the tour.
+Behavior = BHV_Waypoint
+{
+  name        = waypt_survey
+  pwt         = 100
+  condition   = MODE==SURVEYING
+  updates     = TRANSIT_UPDATE
+  perpetual   = true
+
+        speed = 1.2            // lab 4.2: max speed 1.2 m/s
+       radius = 3.0            // capture radius; a visit counts within 3 m (4.3)
+  slip_radius = 25             // "high enough" (lab 4.3) to clear this vehicle's
+                               // ~17-29 m turn radius at 1.2 m/s, so it skips a
+                               // missed point and moves on instead of circling
+       points = $(START_POS)   // placeholder until pGenPath posts the real tour
+
+  visual_hints = nextpt_color=yellow, nextpt_lcolor=khaki
+  visual_hints = vertex_color=dodger_blue, vertex_size=2
+  visual_hints = edge_color=gray60, edge_size=1
+}
+
+
+//----------------------------------------------
+Behavior = BHV_Waypoint
+{
+  name      = waypt_return
+  pwt       = 100
+  condition = MODE==RETURNING
+  endflag   = STATION_KEEP = true
+  perpetual = true
+
+      speed = 1.2
+     radius = 3.0
+  nm_radius = 15.0
+     points = $(START_POS)
+       lead = 8
+}
+
+//----------------------------------------------
+Behavior = BHV_StationKeep
+{
+  name      = station-keep
+  pwt       = 100
+  condition = MODE==STATION-KEEPING
+
+   center_activate = true
+      inner_radius = 5
+      outer_radius = 10
+       outer_speed = 1.0
+     transit_speed = 1.2
+        swing_time = 7
+      visual_hints = vertex_size=0, edge_color=gray50
+}
+
+//----------------------------------------------
+// REFUEL phase 1: drive home to the launch point. On arrival the endflag sets
+// REFUEL_WAIT=true, which switches the sub-mode to WAITING.
+Behavior = BHV_Waypoint
+{
+  name      = refuel_transit
+  pwt       = 100
+  condition = MODE==REFUELING
+  condition = REFUEL_WAIT = false
+  endflag   = REFUEL_WAIT = true
+  perpetual = true
+
+      speed = 1.2
+     radius = 5.0
+  nm_radius = 25.0
+     points = $(START_POS)
+       lead = 8
+}
+
+//----------------------------------------------
+// REFUEL phase 2: hold station at the launch point while refueling.
+Behavior = BHV_StationKeep
+{
+  name      = refuel_station
+  pwt       = 100
+  condition = MODE==REFUELING
+  condition = REFUEL_WAIT = true
+
+   center_activate = true
+      inner_radius = 5
+      outer_radius = 10
+       outer_speed = 1.0
+     transit_speed = 1.2
+        swing_time = 7
+      visual_hints = vertex_size=0, edge_color=green
+}
+
+//----------------------------------------------
+// REFUEL phase 2 timer: count 60s while WAITING, then clear the refuel flags so
+// the vehicle leaves REFUELING and resumes LOITERING. perpetual=true re-arms it
+// for the next refuel command.
+Behavior = BHV_Timer
+{
+  name                = refuel_timer
+  condition           = MODE==REFUELING
+  condition           = REFUEL_WAIT = true
+  duration            = 60
+  perpetual           = true
+  duration_idle_decay = false
+  endflag             = REFUEL_NEEDED = false
+  endflag             = REFUEL_WAIT   = false
+}
+
+//----------------------------------------------
+// AUTO-REFUEL "fuel clock" (lab 4.2): counts 600s of SURVEYING, then auto-posts
+// REFUEL_NEEDED=true to start a refuel run. condition=MODE==SURVEYING means it
+// only counts while actually surveying the points; duration_idle_decay=false
+// makes it PAUSE (hold its elapsed count) whenever the vehicle is station-
+// keeping, returning, or refueling -- i.e. return time is NOT counted against
+// the tour budget. perpetual=true re-arms it after each refuel so it repeats.
+Behavior = BHV_Timer
+{
+  name                = fuel_clock
+  condition           = MODE==SURVEYING
+  duration            = 600
+  perpetual           = true
+  duration_idle_decay = false
+  endflag             = REFUEL_NEEDED = true
+}

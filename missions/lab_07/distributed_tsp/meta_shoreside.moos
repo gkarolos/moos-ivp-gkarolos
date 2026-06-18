@@ -1,0 +1,162 @@
+//*******************************************************
+// ShoreSide Configuration File
+
+ServerHost = localhost
+ServerPort = $(VPORT)
+Community  = $(VNAME)
+
+#include plug_origin_warp.moos
+  
+//--------------------------------------------------------
+Processconfig = ANTLER
+{
+  MSBetweenLaunches = 100
+
+  Run = MOOSDB          @ NewConsole = false
+  Run = pRealm          @ NewConsole = false
+  Run = pMarineViewer   @ NewConsole = false
+  Run = pLogger         @ NewConsole = false
+  Run = pShare          @ NewConsole = false
+  Run = pHostInfo       @ NewConsole = false
+  Run = uFldShoreBroker @ NewConsole = false
+  Run = pRealm          @ NewConsole = false
+  Run = pPointAssign    @ NewConsole = false   // splits VISIT_POINT across vehicles
+  // Two instances of uTimerScript generate the TSP visit points. The same
+  // executable is run twice under two different names via the "~alias" suffix;
+  // each alias reads the ProcessConfig block of the same name below.
+  Run = uTimerScript    @ NewConsole = false ~uPointCue   // posts firstpoint / lastpoint cues
+  Run = uTimerScript    @ NewConsole = false ~uPointGen   // posts the 100 random points
+}
+
+#include plug_pShare.moos
+#include plug_pHostInfo.moos
+#include plug_pLogger.moos
+
+//--------------------------------------------------
+// uFldShoreBroker Configuration Block
+
+ProcessConfig = uFldShoreBroker
+{
+  AppTick       = 1
+  CommsTick     = 1
+
+  qbridge  = DEPLOY, NODE_REPORT
+  qbridge  = STATION_KEEP, APPCAST_REQ
+  qbridge  = MOOS_MANUAL_OVERRIDE
+  qbridge  = REFUEL_NEEDED
+  qbridge  = VISIT_POINT          // VISIT_POINT_<VNAME> -> each vehicle as VISIT_POINT
+
+  bridge   = src=RETURN_ALL, alias=RETURN
+  bridge   = src=RETURN_$V,  alias=RETURN
+}
+
+//--------------------------------------------------------
+// pPointAssign : splits the VISIT_POINT burst across the vehicles.
+// One vname= line per vehicle (NOT hardcoded in the app). assign_by_region
+// false = alternating round-robin; true = west/east split at region_split_x.
+ProcessConfig = pPointAssign
+{
+  AppTick   = 4
+  CommsTick = 4
+
+  vname = henry
+  vname = gilda
+
+  assign_by_region = true    // Assignment 2 region-split demo (west/east, non-overlapping)
+}
+
+//--------------------------------------------------------
+ProcessConfig = pMarineViewer
+{
+  AppTick    = 4
+  CommsTick  = 4
+
+  tiff_file            = forrest19.tif
+  set_pan_x            = -90
+  set_pan_y            = -280
+  zoom                 = 0.65
+  vehicles_shape_scale = 1.5
+  vehicles_name_mode   = names+shortmode
+
+	nodes_font_size = xlarge
+	procs_font_size = xlarge
+	appcast_font_size = large
+	
+  point_viewable_labels   = false
+  polygon_viewable_labels = false
+  appcast_viewable     = true
+  appcast_color_scheme = indigo
+  hash_delta           = 50
+  hash_viewable        = true
+  hash_shade           = 0.35
+
+  scope = PHI_HOST_INFO
+
+  button_one   = DEPLOY  # DEPLOY_ALL=true 
+  button_one   = MOOS_MANUAL_OVERRIDE_ALL=false 
+  button_one   = RETURN_ALL=false # STATION_KEEP_ALL=false
+
+  button_two   = RETURN  # RETURN_ALL=true
+  button_two   = STATION_KEEP_ALL=false
+
+  button_three = STATION  # STATION_KEEP_ALL=true
+
+  button_four  = REFUEL  # REFUEL_NEEDED_ALL=true
+}
+
+//--------------------------------------------------------
+// uPointCue : brackets the point burst with completeness cues.
+// (This is a uTimerScript run under the alias "uPointCue".)
+//
+// It posts VISIT_POINT="firstpoint" before any point, then a private
+// POINTS_GO=true flag that releases the generator (uPointGen waits on it), and
+// finally VISIT_POINT="lastpoint" after the burst is well finished. The cue/
+// generator split + the POINTS_GO handshake guarantees the cues bracket the
+// points correctly no matter which app connects first.
+ProcessConfig = uPointCue
+{
+  AppTick   = 4              // how many times/sec the app iterates
+  CommsTick = 4              // how many times/sec it exchanges mail with the DB
+
+  paused     = false         // false = start running immediately (true = wait for pause_var)
+  reset_max  = 0             // 0 = run the event list exactly once (no repeats)
+  time_zero  = db_start      // event "time=" values are measured from MOOSDB start
+
+  // Wait until pPointAssign is connected before posting any cues/points. The
+  // MOOSDB only keeps the latest value, so the burst would be lost if no one is
+  // listening yet. block_on holds the whole script until that app is present.
+  block_on = pPointAssign
+
+  // event: post <var>=<val> at the given time (seconds, on the db_start clock)
+  event = var=VISIT_POINT, val="firstpoint", time=1     // start-of-set cue
+  event = var=POINTS_GO,   val="true",       time=1.5   // release the generator
+  event = var=VISIT_POINT, val="lastpoint",  time=25    // end-of-set cue (after the burst)
+}
+
+//--------------------------------------------------------
+// uPointGen : generates 100 random visit points in the operating region.
+// (This is a uTimerScript run under the alias "uPointGen".)
+//
+// Region corners (from the lab): (-25,-25)(-25,-175)(200,-25)(200,-175)
+//   => x in [-25, 200],  y in [-175, -25].
+ProcessConfig = uPointGen
+{
+  AppTick   = 25             // high tick => the 100-point burst finishes quickly (~4s)
+  CommsTick = 25
+
+  paused     = false
+  condition  = (POINTS_GO = true)   // do nothing until uPointCue posts the go flag
+                                     // (ensures firstpoint is posted before any point)
+
+  reset_max  = 99            // resets after each post; 1 initial run + 99 resets = 100 posts
+  reset_time = all-posted    // reset as soon as the (single) event has been posted
+
+  // randvar: declare a random macro re-rolled at each reset (key=at_reset).
+  //   $[XPOS] / $[YPOS] expand to the current random draw inside the event value.
+  randvar = varname=XPOS, min=-25,  max=200, key=at_reset   // random x within the region
+  randvar = varname=YPOS, min=-175, max=-25, key=at_reset   // random y within the region
+
+  // The point itself. $[TCOUNT] is uTimerScript's running post counter (0,1,2,...),
+  // which we use as the unique point id required by the lab.
+  event = var=VISIT_POINT, val="x=$[XPOS],y=$[YPOS],id=$[TCOUNT]", time=0
+}

@@ -1,0 +1,27 @@
+//--------------------------------------------------
+// pLogger Configuration Block (Created from Plugin)
+
+ProcessConfig = pLogger
+{
+  AppTick 	= 10
+  CommsTick 	= 10
+  
+  File		= LOG_%(VNAME)
+  PATH		= ./
+  AsyncLog 	= true
+  FileTimeStamp = true
+
+  // Log it all!!!!!
+  LogAuxSrc       = true
+  WildCardLogging = true
+
+  // GOTCHA (lab 3.6.2): VISIT_POINT arrives in one ~100-message burst. Wildcard
+  // logging only registers for a variable AFTER it first appears in the DB var
+  // summary, so it would miss most of the burst. Pre-registering here (@0 =
+  // log every change, nosync = don't wait for the summary) captures them all.
+  Log = VISIT_POINT @ 0 nosync
+
+  WildCardOmitPattern = *_STATUS
+
+  CompressAlogs = false
+}
