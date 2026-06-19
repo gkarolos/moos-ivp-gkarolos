@@ -11,9 +11,11 @@
 #include <vector>
 #include <string>
 #include <map>
+#include <set>
 #include "MOOS/libMOOS/Thirdparty/AppCasting/AppCastingMOOSApp.h"
 #include "XYPoint.h"
 #include "XYPolygon.h"
+#include "XYSegList.h"
 
 class GenRescue : public AppCastingMOOSApp
 {
@@ -44,7 +46,25 @@ class GenRescue : public AppCastingMOOSApp
   double     m_nav_x;
   double     m_nav_y;
   bool       m_nav_x_set;
-  bool       m_nav_y_set;    
+  bool       m_nav_y_set;
+
+  // Lab 9 (Assignment 4): the swimmers we currently know about, keyed by
+  // their unique swimmer id. Using a map makes the repeated (every ~15s)
+  // SWIMMER_ALERT messages trivial to dedupe -- a known id is just ignored.
+  std::map<std::string, XYPoint> m_swimmers;
+
+  // Ids of swimmers already rescued. SWIMMER_ALERT messages keep repeating
+  // even after a swimmer is rescued, so we must remember rescued ids
+  // permanently and never re-add them to the target list above.
+  std::set<std::string> m_rescued;
+
+  // True whenever the swimmer set has changed (a swimmer was added or
+  // rescued) and the rescue path therefore needs to be (re)built.
+  bool         m_path_pending;
+
+  // Running count of swimmers we were tracking that got rescued
+  // (reported via FOUND_SWIMMER). Used in the AppCast report.
+  unsigned int m_total_rescued;
 };
 
 #endif 
