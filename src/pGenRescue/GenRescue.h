@@ -1,5 +1,5 @@
 /************************************************************/
-/*    NAME: Mike Benjamin                                   */
+/*    NAME: Karolos Geroulanos                              */
 /*    ORGN: MIT                                             */
 /*    FILE: GenRescue.h                                     */
 /*    DATE: April 18th, 2022                                */
@@ -37,6 +37,11 @@ class GenRescue : public AppCastingMOOSApp
   bool handleMailRescueRegion(std::string);
   void postShortestPath();
   void postNullPath();
+
+  // Improve a greedy tour by repeatedly un-crossing pairs of legs (2-opt).
+  // Only ever reorders the same vertices and only accepts strictly shorter
+  // tours, so it can never drop a swimmer or lengthen the path.
+  XYSegList twoOptPath(XYSegList segl, double sx, double sy);
 
  private: // Config variables
   std::string m_vname;

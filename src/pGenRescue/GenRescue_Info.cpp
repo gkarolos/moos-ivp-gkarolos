@@ -1,5 +1,5 @@
 /****************************************************************/
-/*   NAME: Mike Benjamin                                        */
+/*   NAME: Karolos Geroulanos                                   */
 /*   ORGN: MIT Cambridge MA                                     */
 /*   FILE: GenRescue_Info.cpp                                   */
 /*   DATE: April 18th, 2022                                     */

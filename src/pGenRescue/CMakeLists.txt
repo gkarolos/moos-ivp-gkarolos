@@ -1,6 +1,6 @@
 #--------------------------------------------------------
 # The CMakeLists.txt for:                      pGenRescue
-# Author(s):                                Mike Benjamin
+# Author(s):                                Karolos Geroulanos
 #--------------------------------------------------------
 
 FILE(GLOB SRC *.cpp)

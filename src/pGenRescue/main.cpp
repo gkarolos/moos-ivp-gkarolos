@@ -1,5 +1,5 @@
 /************************************************************/
-/*    NAME: Mike Benjamin                                   */
+/*    NAME: Karolos Geroulanos                              */
 /*    ORGN: MIT                                             */
 /*    FILE: main.cpp                                        */
 /*    DATE: April 18th, 2022                                */

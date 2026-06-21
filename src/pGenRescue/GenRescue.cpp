@@ -1,5 +1,5 @@
 /************************************************************/
-/*    NAME: Mike Benjamin                                   */
+/*    NAME: Karolos Geroulanos                              */
 /*    ORGN: MIT                                             */
 /*    FILE: GenRescue.cpp                                   */
 /*    DATE: April 18th, 2022                                */
@@ -227,6 +227,11 @@ void GenRescue::postShortestPath()
     // Greedy nearest-neighbour ordering, starting from ownship position.
     m_path = greedyPath(segl, m_nav_x, m_nav_y);
 
+    // Greedy tours often cross themselves (especially from an awkward start),
+    // which wastes travel distance. Refine the order with a 2-opt pass that
+    // un-crosses legs -- same swimmers, strictly shorter route.
+    m_path = twoOptPath(m_path, m_nav_x, m_nav_y);
+
     // Seglist needs a stable name, so the drawing updates in place.
     m_path.set_label("gen_rescue");
     m_path_pending = false;
@@ -240,6 +245,64 @@ void GenRescue::postShortestPath()
   string update_str = "points = " + m_path.get_spec_pts();
   Notify(update_var, update_str);
   reportEvent("SURVEY_UPDATE=" + update_str);
+}
+
+//---------------------------------------------------------
+// Procedure: twoOptPath()
+//   Purpose: Take an ordered tour (e.g. from greedyPath) and shorten it by
+//            repeatedly reversing any segment whose two boundary legs cross
+//            or otherwise lengthen the path. The vehicle start (sx,sy) is a
+//            fixed anchor and is never reordered. Returns an improved tour
+//            containing exactly the same vertices.
+
+XYSegList GenRescue::twoOptPath(XYSegList segl, double sx, double sy)
+{
+  unsigned int n = segl.size();
+  // Need at least 3 swimmers for a crossing to be possible.
+  if(n < 3)
+    return(segl);
+
+  // Build the full ordered point list with ownship fixed at the front.
+  vector<double> px, py;
+  px.push_back(sx);
+  py.push_back(sy);
+  for(unsigned int i=0; i<n; i++) {
+    px.push_back(segl.get_vx(i));
+    py.push_back(segl.get_vy(i));
+  }
+  unsigned int N = px.size();   // N = n + 1 (index 0 is the fixed start)
+
+  // Keep sweeping until a full pass yields no further improvement.
+  bool improved = true;
+  while(improved) {
+    improved = false;
+    for(unsigned int i=1; i<(N-1); i++) {
+      for(unsigned int k=i+1; k<N; k++) {
+        // Current legs (i-1 -> i) and (k-1 -> k) vs. the un-crossed legs
+        // (i-1 -> k-1) and (i -> k) produced by reversing segment [i..k-1].
+        double before = distPointToPoint(px[i-1], py[i-1], px[i],   py[i]) +
+                        distPointToPoint(px[k-1], py[k-1], px[k],   py[k]);
+        double after  = distPointToPoint(px[i-1], py[i-1], px[k-1], py[k-1]) +
+                        distPointToPoint(px[i],   py[i],   px[k],   py[k]);
+        if((after + 0.000001) < before) {
+          unsigned int lo = i, hi = k-1;
+          while(lo < hi) {
+            double tx = px[lo]; px[lo] = px[hi]; px[hi] = tx;
+            double ty = py[lo]; py[lo] = py[hi]; py[hi] = ty;
+            lo++;
+            hi--;
+          }
+          improved = true;
+        }
+      }
+    }
+  }
+
+  // Rebuild the seglist from the improved order (skip the start at index 0).
+  XYSegList result;
+  for(unsigned int i=1; i<N; i++)
+    result.add_vertex(px[i], py[i]);
+  return(result);
 }
 
 //---------------------------------------------------------
