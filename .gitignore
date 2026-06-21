@@ -66,3 +66,9 @@ LOG_*/
 *.alog
 *.blog
 *.ylog
+
+# pid_benchmark run output (regenerable) — ignore by default
+results.txt
+.runs/
+XLOG_*/
+!missions/pid_benchmark/harness/results.txt

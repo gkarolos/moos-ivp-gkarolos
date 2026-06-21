@@ -1,0 +1,5 @@
+case=kp03 yaw_kp=0.3   grade=pass  form=pid_benchmark  mmod=kp03  mission_time=237.11  total_dist=458.125  eval=true  waypoint_end=true  bhv_error=false  mhash=[VAST-KADE]
+case=kp06 yaw_kp=0.6   grade=pass  form=pid_benchmark  mmod=kp06  mission_time=221.009  total_dist=426.876  eval=true  waypoint_end=true  bhv_error=false  mhash=[PURE-MEMO]
+case=kp09 yaw_kp=0.9   grade=pass  form=pid_benchmark  mmod=kp09  mission_time=216.467  total_dist=418.405  eval=true  waypoint_end=true  bhv_error=false  mhash=[NEAR-DREW]
+case=kp12 yaw_kp=1.2   grade=pass  form=pid_benchmark  mmod=kp12  mission_time=214.27  total_dist=414.43  eval=true  waypoint_end=true  bhv_error=false  mhash=[GLIB-BEES]
+case=kp15 yaw_kp=1.5   grade=pass  form=pid_benchmark  mmod=kp15  mission_time=213.401  total_dist=412.618  eval=true  waypoint_end=true  bhv_error=false  mhash=[SURE-JAKE]
