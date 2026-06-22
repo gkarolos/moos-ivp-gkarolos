@@ -38,10 +38,24 @@ class GenRescue : public AppCastingMOOSApp
   void postShortestPath();
   void postNullPath();
 
-  // Improve a greedy tour by repeatedly un-crossing pairs of legs (2-opt).
-  // Only ever reorders the same vertices and only accepts strictly shorter
-  // tours, so it can never drop a swimmer or lengthen the path.
-  XYSegList twoOptPath(XYSegList segl, double sx, double sy);
+  // #1 Cheapest insertion: slot one swimmer id into m_tour at the position
+  // that adds the least travel distance, so a mid-mission swimmer joins the
+  // existing route without forcing a disruptive full rebuild / U-turn.
+  void   cheapestInsert(std::string id);
+
+  // #2 Refine the order of m_tour in place with 2-opt (un-cross legs) and
+  // Or-opt (relocate short chains). Only ever accepts a strictly shorter
+  // tour, so it can never drop or duplicate a swimmer.
+  void   optimizeTour();
+
+  // Total travel length of an ordered swimmer-id list, starting from ownship.
+  double tourLength(const std::vector<std::string>& order);
+
+  // Old planning method (greedy nearest-neighbour ordering + 2-opt), kept so
+  // the planner can compute it alongside the new method and drive whichever
+  // tour is shorter -- guarantees the route is never worse than before.
+  std::vector<std::string> greedyTour();
+  void   twoOptIds(std::vector<std::string>& order);
 
  private: // Config variables
   std::string m_vname;
@@ -70,6 +84,11 @@ class GenRescue : public AppCastingMOOSApp
   // Running count of swimmers we were tracking that got rescued
   // (reported via FOUND_SWIMMER). Used in the AppCast report.
   unsigned int m_total_rescued;
+
+  // Ordered swimmer ids of the current rescue plan (parallel to m_path).
+  // Kept across replans so a new swimmer can be slotted into the existing
+  // route (cheapest insertion) instead of rebuilding the tour from scratch.
+  std::vector<std::string> m_tour;
 };
 
 #endif 

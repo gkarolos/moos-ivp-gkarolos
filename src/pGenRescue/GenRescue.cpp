@@ -6,6 +6,7 @@
 /************************************************************/
 
 #include <iterator>
+#include <algorithm>
 #include "GenRescue.h"
 #include "MBUtils.h"
 #include "ColorParse.h"
@@ -219,18 +220,46 @@ void GenRescue::postShortestPath()
   // vehicle moves and make it indecisive. Between changes we just re-post
   // the cached path (cheap, and keeps the helm fed -- see Iterate()).
   if(m_path_pending) {
-    XYSegList segl;
+    // 1. Drop any planned stops that are no longer pending swimmers (rescued,
+    //    or otherwise gone), preserving the order of the ones that remain.
+    vector<string> kept;
+    for(unsigned int i=0; i<m_tour.size(); i++)
+      if(m_swimmers.count(m_tour[i]) != 0)
+        kept.push_back(m_tour[i]);
+    m_tour = kept;
+
+    // 2. Slot any newly-known swimmers into the existing route at their
+    //    cheapest insertion point (#1). This keeps the boat's current heading
+    //    and only diverts when it genuinely pays -- no disruptive full rebuild.
     map<string, XYPoint>::iterator q;
-    for(q = m_swimmers.begin(); q != m_swimmers.end(); q++)
-      segl.add_vertex(q->second.x(), q->second.y());
+    for(q = m_swimmers.begin(); q != m_swimmers.end(); q++) {
+      bool present = false;
+      for(unsigned int i=0; i<m_tour.size(); i++)
+        if(m_tour[i] == q->first) { present = true; break; }
+      if(!present)
+        cheapestInsert(q->first);
+    }
 
-    // Greedy nearest-neighbour ordering, starting from ownship position.
-    m_path = greedyPath(segl, m_nav_x, m_nav_y);
+    // 3. Polish the order with 2-opt + Or-opt (strictly-shorter moves only, #2).
+    //    This is the NEW method's candidate route.
+    optimizeTour();
+    vector<string> cand_new = m_tour;
 
-    // Greedy tours often cross themselves (especially from an awkward start),
-    // which wastes travel distance. Refine the order with a 2-opt pass that
-    // un-crosses legs -- same swimmers, strictly shorter route.
-    m_path = twoOptPath(m_path, m_nav_x, m_nav_y);
+    // 3b. Best-of-both safeguard: also compute the OLD method (greedy
+    //     nearest-neighbour + 2-opt) from scratch, and drive whichever full
+    //     route is shorter from the current position. Keeps every gain of the
+    //     new method while guaranteeing we are never worse than the old one.
+    vector<string> cand_old = greedyTour();
+    twoOptIds(cand_old);
+    if((tourLength(cand_old) + 1e-6) < tourLength(cand_new))
+      m_tour = cand_old;
+    else
+      m_tour = cand_new;
+
+    // 4. Materialise the ordered ids into the coordinate path we post/draw.
+    m_path = XYSegList();
+    for(unsigned int i=0; i<m_tour.size(); i++)
+      m_path.add_vertex(m_swimmers[m_tour[i]].x(), m_swimmers[m_tour[i]].y());
 
     // Seglist needs a stable name, so the drawing updates in place.
     m_path.set_label("gen_rescue");
@@ -248,61 +277,184 @@ void GenRescue::postShortestPath()
 }
 
 //---------------------------------------------------------
-// Procedure: twoOptPath()
-//   Purpose: Take an ordered tour (e.g. from greedyPath) and shorten it by
-//            repeatedly reversing any segment whose two boundary legs cross
-//            or otherwise lengthen the path. The vehicle start (sx,sy) is a
-//            fixed anchor and is never reordered. Returns an improved tour
-//            containing exactly the same vertices.
+// Procedure: cheapestInsert()      (fine-tuning #1)
+//   Purpose: Insert one swimmer id into m_tour at the position that adds the
+//            least travel distance to the route. Letting a mid-mission swimmer
+//            join the EXISTING order (rather than triggering a from-scratch
+//            rebuild) keeps the boat's current heading and avoids U-turns.
 
-XYSegList GenRescue::twoOptPath(XYSegList segl, double sx, double sy)
+void GenRescue::cheapestInsert(string id)
 {
-  unsigned int n = segl.size();
-  // Need at least 3 swimmers for a crossing to be possible.
-  if(n < 3)
-    return(segl);
+  double nx = m_swimmers[id].x();
+  double ny = m_swimmers[id].y();
 
-  // Build the full ordered point list with ownship fixed at the front.
-  vector<double> px, py;
-  px.push_back(sx);
-  py.push_back(sy);
-  for(unsigned int i=0; i<n; i++) {
-    px.push_back(segl.get_vx(i));
-    py.push_back(segl.get_vy(i));
+  // Empty tour: the new swimmer is simply the first (and only) stop.
+  if(m_tour.empty()) {
+    m_tour.push_back(id);
+    return;
   }
-  unsigned int N = px.size();   // N = n + 1 (index 0 is the fixed start)
 
-  // Keep sweeping until a full pass yields no further improvement.
+  // Try every slot (before each existing stop, and at the very end); keep the
+  // one that adds the least travel. Slot p means: ...prev -> NEW -> next...
+  // where prev is ownship when p==0.
+  double       best_added = -1;
+  unsigned int best_pos   = 0;
+  for(unsigned int p=0; p<=m_tour.size(); p++) {
+    double px, py;                       // the point just before slot p
+    if(p == 0) { px = m_nav_x; py = m_nav_y; }
+    else       { px = m_swimmers[m_tour[p-1]].x(); py = m_swimmers[m_tour[p-1]].y(); }
+
+    double added;
+    if(p == m_tour.size()) {
+      // Appending at the end only adds the leg prev -> NEW.
+      added = distPointToPoint(px, py, nx, ny);
+    }
+    else {
+      // Splicing between prev and next: prev->NEW->next minus prev->next.
+      double qx = m_swimmers[m_tour[p]].x();
+      double qy = m_swimmers[m_tour[p]].y();
+      added = distPointToPoint(px,py,nx,ny) + distPointToPoint(nx,ny,qx,qy)
+            - distPointToPoint(px,py,qx,qy);
+    }
+
+    if((best_added < 0) || (added < best_added)) {
+      best_added = added;
+      best_pos   = p;
+    }
+  }
+  m_tour.insert(m_tour.begin() + best_pos, id);
+}
+
+//---------------------------------------------------------
+// Procedure: tourLength()
+//   Purpose: Total travel length of an ordered swimmer-id list, measured from
+//            the ownship position through the stops in order (an open path --
+//            no return leg, matching the rescue task).
+
+double GenRescue::tourLength(const vector<string>& order)
+{
+  if(order.empty())
+    return(0);
+
+  // Leg from ownship to the first stop.
+  double total = distPointToPoint(m_nav_x, m_nav_y,
+                                  m_swimmers[order[0]].x(),
+                                  m_swimmers[order[0]].y());
+  // Legs between successive stops.
+  for(unsigned int i=1; i<order.size(); i++)
+    total += distPointToPoint(m_swimmers[order[i-1]].x(), m_swimmers[order[i-1]].y(),
+                              m_swimmers[order[i]].x(),   m_swimmers[order[i]].y());
+  return(total);
+}
+
+//---------------------------------------------------------
+// Procedure: optimizeTour()        (fine-tuning #2)
+//   Purpose: Shorten m_tour in place using two local-search moves:
+//              - 2-opt:  reverse a sub-segment (un-crosses legs)
+//              - Or-opt: lift out a short chain (1..3 stops) and reinsert it
+//                        somewhere cheaper
+//            Each candidate is a full reordering of the SAME ids, accepted only
+//            if the whole tour gets strictly shorter -- so a swimmer can never
+//            be dropped, duplicated, or the route lengthened. Sweeps to a local
+//            optimum. (Swimmer counts are small, so the O(n^2)/O(n^3) rebuilds
+//            here are negligible at helm rates.)
+
+void GenRescue::optimizeTour()
+{
+  if(m_tour.size() < 2)
+    return;
+
   bool improved = true;
   while(improved) {
     improved = false;
-    for(unsigned int i=1; i<(N-1); i++) {
-      for(unsigned int k=i+1; k<N; k++) {
-        // Current legs (i-1 -> i) and (k-1 -> k) vs. the un-crossed legs
-        // (i-1 -> k-1) and (i -> k) produced by reversing segment [i..k-1].
-        double before = distPointToPoint(px[i-1], py[i-1], px[i],   py[i]) +
-                        distPointToPoint(px[k-1], py[k-1], px[k],   py[k]);
-        double after  = distPointToPoint(px[i-1], py[i-1], px[k-1], py[k-1]) +
-                        distPointToPoint(px[i],   py[i],   px[k],   py[k]);
-        if((after + 0.000001) < before) {
-          unsigned int lo = i, hi = k-1;
-          while(lo < hi) {
-            double tx = px[lo]; px[lo] = px[hi]; px[hi] = tx;
-            double ty = py[lo]; py[lo] = py[hi]; py[hi] = ty;
-            lo++;
-            hi--;
+    double best = tourLength(m_tour);
+
+    // --- 2-opt: reverse each sub-segment [i..k]; keep it if the tour shrank.
+    for(unsigned int i=0; (i+1) < m_tour.size(); i++) {
+      for(unsigned int k=i+1; k < m_tour.size(); k++) {
+        vector<string> cand = m_tour;
+        reverse(cand.begin()+i, cand.begin()+k+1);
+        double len = tourLength(cand);
+        if((len + 1e-6) < best) {
+          m_tour = cand; best = len; improved = true;
+        }
+      }
+    }
+
+    // --- Or-opt: lift out a chain of L stops (1..3) and reinsert it elsewhere.
+    for(unsigned int L=1; (L<=3) && (L < m_tour.size()); L++) {
+      for(unsigned int i=0; (i+L) <= m_tour.size(); i++) {
+        vector<string> chain(m_tour.begin()+i, m_tour.begin()+i+L);
+        vector<string> rest  = m_tour;
+        rest.erase(rest.begin()+i, rest.begin()+i+L);
+        for(unsigned int p=0; p <= rest.size(); p++) {
+          vector<string> cand = rest;
+          cand.insert(cand.begin()+p, chain.begin(), chain.end());
+          double len = tourLength(cand);
+          if((len + 1e-6) < best) {
+            m_tour = cand; best = len; improved = true;
           }
-          improved = true;
         }
       }
     }
   }
+}
 
-  // Rebuild the seglist from the improved order (skip the start at index 0).
-  XYSegList result;
-  for(unsigned int i=1; i<N; i++)
-    result.add_vertex(px[i], py[i]);
-  return(result);
+//---------------------------------------------------------
+// Procedure: greedyTour()          (old planning method, part 1)
+//   Purpose: Order all current swimmers by nearest-neighbour from ownship.
+//            Used by the best-of-both safeguard in postShortestPath().
+
+vector<string> GenRescue::greedyTour()
+{
+  vector<string> remaining;
+  for(map<string,XYPoint>::iterator q=m_swimmers.begin(); q!=m_swimmers.end(); q++)
+    remaining.push_back(q->first);
+
+  vector<string> order;
+  double cx = m_nav_x, cy = m_nav_y;
+  while(!remaining.empty()) {
+    unsigned int best_i = 0;
+    double       best_d = -1;
+    for(unsigned int i=0; i<remaining.size(); i++) {
+      double d = distPointToPoint(cx, cy, m_swimmers[remaining[i]].x(),
+                                          m_swimmers[remaining[i]].y());
+      if((best_d < 0) || (d < best_d)) { best_d = d; best_i = i; }
+    }
+    string id = remaining[best_i];
+    order.push_back(id);
+    cx = m_swimmers[id].x();
+    cy = m_swimmers[id].y();
+    remaining.erase(remaining.begin() + best_i);
+  }
+  return(order);
+}
+
+//---------------------------------------------------------
+// Procedure: twoOptIds()           (old planning method, part 2)
+//   Purpose: Shorten an ordered id list with 2-opt (un-cross legs) only.
+//            Same strictly-shorter-only rule, so it never drops a swimmer.
+
+void GenRescue::twoOptIds(vector<string>& order)
+{
+  if(order.size() < 3)
+    return;
+
+  bool improved = true;
+  while(improved) {
+    improved = false;
+    double best = tourLength(order);
+    for(unsigned int i=0; (i+1) < order.size(); i++) {
+      for(unsigned int k=i+1; k < order.size(); k++) {
+        vector<string> cand = order;
+        reverse(cand.begin()+i, cand.begin()+k+1);
+        double len = tourLength(cand);
+        if((len + 1e-6) < best) {
+          order = cand; best = len; improved = true;
+        }
+      }
+    }
+  }
 }
 
 //---------------------------------------------------------
