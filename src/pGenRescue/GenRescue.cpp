@@ -7,6 +7,7 @@
 
 #include <iterator>
 #include <algorithm>
+#include <cmath>
 #include "GenRescue.h"
 #include "MBUtils.h"
 #include "ColorParse.h"
@@ -32,6 +33,13 @@ GenRescue::GenRescue()
 
   m_path_pending  = false;
   m_total_rescued = 0;
+
+  m_rival_x   = 0;
+  m_rival_y   = 0;
+  m_rival_hdg = 0;
+  m_rival_spd = 0;
+  m_rival_utc = 0;
+  m_rival_set = false;
 }
 
 //---------------------------------------------------------
@@ -50,8 +58,10 @@ bool GenRescue::OnNewMail(MOOSMSG_LIST &NewMail)
     bool handled = true;
     if(key == "SWIMMER_ALERT") 
       handled = handleMailNewSwimmer(sval);
-    else if(key == "FOUND_SWIMMER") 
+    else if(key == "FOUND_SWIMMER")
       handled = handleMailFoundSwimmer(sval);
+    else if(key == "NODE_REPORT")
+      handled = handleMailNodeReport(sval);
     else if(key == "NAV_X") {
       m_nav_x = msg.GetDouble();
       m_nav_x_set = true;
@@ -87,6 +97,10 @@ bool GenRescue::Iterate()
 {
   AppCastingMOOSApp::Iterate();
 
+  // Refresh rival-awareness first: this may concede/reclaim swimmers and set
+  // m_path_pending so the planner below reacts to the rival's movement.
+  updateWeights();
+
   // Replan immediately whenever a swimmer was just added or removed
   // (m_path_pending), and also re-post periodically so the helm still
   // receives our path even if it wasn't listening yet (e.g. before DEPLOY).
@@ -115,8 +129,14 @@ bool GenRescue::OnStartUp()
     if(param == "vname")
       m_vname = value;
   }
-  
-  RegisterVariables();	
+
+  // The rescue missions don't set a vname param, so fall back to the MOOS
+  // community name (which IS the vehicle name) -- needed so we can tell our
+  // OWN NODE_REPORT from the rival's in handleMailNodeReport().
+  if(m_vname == "")
+    m_MissionReader.GetValue("Community", m_vname);
+
+  RegisterVariables();
   return(true);
 }
 
@@ -128,6 +148,8 @@ void GenRescue::RegisterVariables()
   AppCastingMOOSApp::RegisterVariables();
   Register("SWIMMER_ALERT", 0);
   Register("FOUND_SWIMMER", 0);
+  // Competitor-awareness: the rival's position reports (NAME != our vname).
+  Register("NODE_REPORT", 0);
   // We need our own navigation position to plan a greedy path from where
   // the vehicle actually is. The baseline handled these in OnNewMail but
   // never subscribed to them, so they never arrived.
@@ -203,6 +225,123 @@ bool GenRescue::handleMailFoundSwimmer(string str)
 }
 
 //---------------------------------------------------------
+// Procedure: handleMailNodeReport()
+//   Parse a NODE_REPORT. Anything whose NAME isn't our own vname is "the
+//   rival" -- robust to whoever we're drawn against (alex, abe, ...).
+
+bool GenRescue::handleMailNodeReport(string str)
+{
+  string name;
+  if(!tokParse(str, "NAME", ',', '=', name))
+    return(false);
+  if(name == m_vname)        // that's our own report; ignore
+    return(true);
+
+  double x, y, hdg = 0, spd = 0;
+  if(!tokParse(str, "X", ',', '=', x)) return(false);
+  if(!tokParse(str, "Y", ',', '=', y)) return(false);
+  tokParse(str, "HDG", ',', '=', hdg);   // optional
+  tokParse(str, "SPD", ',', '=', spd);   // optional
+
+  m_rival_x = x;  m_rival_y = y;
+  m_rival_hdg = hdg;  m_rival_spd = spd;
+  m_rival_utc = MOOSTime();
+  m_rival_set = true;
+  return(true);
+}
+
+//---------------------------------------------------------
+// Procedure: rivalWeight()
+//   Returns w in [0,1]: how much this swimmer is OURS to pursue.
+//   1.0 = fully ours; ->0 = the rival clearly wins the race for it.
+//   Falls back to 1.0 whenever we have no fresh rival data, so out of
+//   comms range the planner behaves exactly as it does today.
+
+double GenRescue::rivalWeight(string id)
+{
+  const double STALE_SECS = 5.0;   // older rival data -> treat as no data
+  const double PHI_MAX    = 45.0;  // rival heading gate: must be clearly pointed at it
+  const double TAU        = 8.0;   // race "fuzziness" (meters; tune later)
+  const double DEG        = 180.0 / 3.14159265358979;
+
+  if(!m_rival_set)                            return(1.0);
+  if(!m_nav_x_set || !m_nav_y_set)            return(1.0);
+  if((MOOSTime() - m_rival_utc) > STALE_SECS) return(1.0);
+
+  double sx = m_swimmers[id].x();
+  double sy = m_swimmers[id].y();
+
+  double d_own   = distPointToPoint(m_nav_x,   m_nav_y,   sx, sy);
+  double d_rival = distPointToPoint(m_rival_x, m_rival_y, sx, sy);
+
+  // Heading gate: compass bearing rival->swimmer vs the rival's heading.
+  double brg = atan2(sx - m_rival_x, sy - m_rival_y) * DEG;  // 0=North, CW
+  if(brg < 0) brg += 360.0;
+  double dphi = fabs(brg - m_rival_hdg);
+  if(dphi > 180.0) dphi = 360.0 - dphi;
+  if(dphi >= PHI_MAX)        // rival driving away -> fully ours
+    return(1.0);
+
+  // Equal-speed assumption: ETA proportional to distance. Race margin
+  // delta>0 => we arrive first. Logistic squashes it into [0,1].
+  double delta = d_rival - d_own;
+  return(1.0 / (1.0 + exp(-delta / TAU)));
+}
+
+//---------------------------------------------------------
+// Procedure: updateWeights()
+//   Refresh every swimmer's smoothed weight and flip the conceded set with
+//   hysteresis (concede below 0.3, reclaim above 0.5). If the conceded set
+//   changes, request a replan. Called once per Iterate().
+
+void GenRescue::updateWeights()
+{
+  // Tuned CONSERVATIVE: only concede on strong evidence, and never abandon the
+  // swimmer we're already heading to (prevents U-turn thrash).
+  const double CONCEDE_LO = 0.15;  // concede only when very confident it's lost
+  const double RECLAIM_HI = 0.40;  // reclaim readily once it's no longer clear
+
+  bool changed = false;
+
+  // COMMITMENT: the first stop in the current tour is where we're already
+  // driving. Never concede it -- abandoning an active target causes U-turns
+  // and wasted travel (the very thing our route optimization avoids).
+  string current_target = (m_tour.empty() ? string("") : m_tour.front());
+
+  map<string, XYPoint>::iterator q;
+  for(q = m_swimmers.begin(); q != m_swimmers.end(); q++) {
+    string id  = q->first;
+    double raw = rivalWeight(id);
+
+    // Exponential smoothing: one noisy report can't yank the plan around.
+    double prev = (m_weight.count(id) ? m_weight[id] : 1.0);
+    double w    = 0.3*raw + 0.7*prev;
+    m_weight[id] = w;
+
+    if(id == current_target) {            // committed -> keep it eligible
+      if(m_conceded.erase(id) > 0) changed = true;
+      continue;
+    }
+
+    bool conceded = (m_conceded.count(id) != 0);
+    if(!conceded && (w < CONCEDE_LO))     { m_conceded.insert(id); changed = true; }
+    else if(conceded && (w > RECLAIM_HI)) { m_conceded.erase(id);  changed = true; }
+  }
+
+  // Forget swimmers that no longer exist (rescued / gone).
+  vector<string> dead;
+  for(set<string>::iterator c=m_conceded.begin(); c!=m_conceded.end(); c++)
+    if(m_swimmers.count(*c) == 0) dead.push_back(*c);
+  for(unsigned int i=0; i<dead.size(); i++) {
+    m_conceded.erase(dead[i]);
+    m_weight.erase(dead[i]);
+  }
+
+  if(changed)
+    m_path_pending = true;
+}
+
+//---------------------------------------------------------
 // Procedure: postShortestPath()
 
 void GenRescue::postShortestPath()
@@ -220,19 +359,35 @@ void GenRescue::postShortestPath()
   // vehicle moves and make it indecisive. Between changes we just re-post
   // the cached path (cheap, and keeps the helm fed -- see Iterate()).
   if(m_path_pending) {
+    // 0. Competitor-awareness filter (Option A): plan only the swimmers we are
+    //    NOT conceding to the rival. ALL-CONCEDED FALLBACK: if every known
+    //    swimmer is conceded, plan over all of them this tick rather than
+    //    freezing (worst case we just trail the rival, like the old code).
+    set<string> conceded_now = m_conceded;
+    {
+      unsigned int eligible = 0;
+      for(map<string,XYPoint>::iterator c=m_swimmers.begin(); c!=m_swimmers.end(); c++)
+        if(conceded_now.count(c->first) == 0) eligible++;
+      if(eligible == 0)
+        conceded_now.clear();
+    }
+
     // 1. Drop any planned stops that are no longer pending swimmers (rescued,
-    //    or otherwise gone), preserving the order of the ones that remain.
+    //    or otherwise gone) OR are now conceded, preserving the order of the
+    //    ones that remain.
     vector<string> kept;
     for(unsigned int i=0; i<m_tour.size(); i++)
-      if(m_swimmers.count(m_tour[i]) != 0)
+      if((m_swimmers.count(m_tour[i]) != 0) && (conceded_now.count(m_tour[i]) == 0))
         kept.push_back(m_tour[i]);
     m_tour = kept;
 
-    // 2. Slot any newly-known swimmers into the existing route at their
-    //    cheapest insertion point (#1). This keeps the boat's current heading
-    //    and only diverts when it genuinely pays -- no disruptive full rebuild.
+    // 2. Slot any newly-known, NON-conceded swimmers into the existing route at
+    //    their cheapest insertion point (#1). This keeps the boat's current
+    //    heading and only diverts when it genuinely pays -- no disruptive rebuild.
     map<string, XYPoint>::iterator q;
     for(q = m_swimmers.begin(); q != m_swimmers.end(); q++) {
+      if(conceded_now.count(q->first) != 0)   // conceded -> don't plan it
+        continue;
       bool present = false;
       for(unsigned int i=0; i<m_tour.size(); i++)
         if(m_tour[i] == q->first) { present = true; break; }
@@ -249,7 +404,7 @@ void GenRescue::postShortestPath()
     //     nearest-neighbour + 2-opt) from scratch, and drive whichever full
     //     route is shorter from the current position. Keeps every gain of the
     //     new method while guaranteeing we are never worse than the old one.
-    vector<string> cand_old = greedyTour();
+    vector<string> cand_old = greedyTour(conceded_now);
     twoOptIds(cand_old);
     if((tourLength(cand_old) + 1e-6) < tourLength(cand_new))
       m_tour = cand_old;
@@ -405,11 +560,12 @@ void GenRescue::optimizeTour()
 //   Purpose: Order all current swimmers by nearest-neighbour from ownship.
 //            Used by the best-of-both safeguard in postShortestPath().
 
-vector<string> GenRescue::greedyTour()
+vector<string> GenRescue::greedyTour(const set<string>& skip)
 {
   vector<string> remaining;
   for(map<string,XYPoint>::iterator q=m_swimmers.begin(); q!=m_swimmers.end(); q++)
-    remaining.push_back(q->first);
+    if(skip.count(q->first) == 0)
+      remaining.push_back(q->first);
 
   vector<string> order;
   double cx = m_nav_x, cy = m_nav_y;
@@ -497,6 +653,15 @@ bool GenRescue::buildReport()
   m_msgs << "Ownship (x,y):     (" << doubleToStringX(m_nav_x,1)
          << ", " << doubleToStringX(m_nav_y,1) << ")" << endl;
   m_msgs << "----------------------------------------" << endl;
+  m_msgs << "Rival seen:        " << boolToString(m_rival_set) << endl;
+  if(m_rival_set) {
+    double rival_age = MOOSTime() - m_rival_utc;
+    m_msgs << "Rival (x,y,hdg):   (" << doubleToStringX(m_rival_x,1) << ", "
+           << doubleToStringX(m_rival_y,1) << ", " << doubleToStringX(m_rival_hdg,0)
+           << ")  age=" << doubleToStringX(rival_age,1) << "s" << endl;
+  }
+  m_msgs << "Swimmers conceded: " << m_conceded.size() << endl;
+  m_msgs << "----------------------------------------" << endl;
   m_msgs << "Swimmers to rescue: " << m_swimmers.size() << endl;
   m_msgs << "Swimmers rescued:   " << m_total_rescued << endl;
   m_msgs << "Path waypoints:     " << m_path.size() << endl;
@@ -507,9 +672,12 @@ bool GenRescue::buildReport()
   map<string, XYPoint>::iterator q;
   for(q = m_swimmers.begin(); q != m_swimmers.end(); q++) {
     XYPoint pt = q->second;
+    double w    = (m_weight.count(q->first) ? m_weight[q->first] : 1.0);
+    string mark = (m_conceded.count(q->first) ? "  <-- CONCEDED" : "");
     m_msgs << "  " << q->first << ": ("
            << doubleToStringX(pt.x(),1) << ", "
-           << doubleToStringX(pt.y(),1) << ")" << endl;
+           << doubleToStringX(pt.y(),1) << ")  w=" << doubleToStringX(w,2)
+           << mark << endl;
   }
   return(true);
 }

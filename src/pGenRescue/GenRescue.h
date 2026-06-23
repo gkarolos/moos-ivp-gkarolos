@@ -38,6 +38,12 @@ class GenRescue : public AppCastingMOOSApp
   void postShortestPath();
   void postNullPath();
 
+  // Competitor-awareness (Option A): parse the rival's NODE_REPORT, score how
+  // much each swimmer is "ours" to go for, and concede the clearly-lost ones.
+  bool   handleMailNodeReport(std::string);
+  double rivalWeight(std::string id);
+  void   updateWeights();
+
   // #1 Cheapest insertion: slot one swimmer id into m_tour at the position
   // that adds the least travel distance, so a mid-mission swimmer joins the
   // existing route without forcing a disruptive full rebuild / U-turn.
@@ -54,7 +60,7 @@ class GenRescue : public AppCastingMOOSApp
   // Old planning method (greedy nearest-neighbour ordering + 2-opt), kept so
   // the planner can compute it alongside the new method and drive whichever
   // tour is shorter -- guarantees the route is never worse than before.
-  std::vector<std::string> greedyTour();
+  std::vector<std::string> greedyTour(const std::set<std::string>& skip);
   void   twoOptIds(std::vector<std::string>& order);
 
  private: // Config variables
@@ -66,6 +72,19 @@ class GenRescue : public AppCastingMOOSApp
   double     m_nav_y;
   bool       m_nav_x_set;
   bool       m_nav_y_set;
+
+  // Rival boat, learned from incoming NODE_REPORT (NAME != our own vname).
+  double m_rival_x;
+  double m_rival_y;
+  double m_rival_hdg;
+  double m_rival_spd;
+  double m_rival_utc;   // MOOSTime of last rival report (for staleness)
+  bool   m_rival_set;
+
+  // Per-swimmer ownership weight in [0,1] (1 = fully ours). Smoothed.
+  std::map<std::string, double> m_weight;
+  // Swimmers we are currently conceding to the rival (hysteresis-controlled).
+  std::set<std::string> m_conceded;
 
   // Lab 9 (Assignment 4): the swimmers we currently know about, keyed by
   // their unique swimmer id. Using a map makes the repeated (every ~15s)
