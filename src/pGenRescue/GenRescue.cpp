@@ -259,7 +259,8 @@ bool GenRescue::handleMailNodeReport(string str)
 
 double GenRescue::rivalWeight(string id)
 {
-  const double STALE_SECS = 5.0;   // older rival data -> treat as no data
+  const double STALE_SECS = 3.0;   // older rival data -> treat as no data
+                                   // (tightened 5->3 so decisions stay current)
   const double PHI_MAX    = 45.0;  // rival heading gate: must be clearly pointed at it
   const double TAU        = 8.0;   // race "fuzziness" (meters; tune later)
   const double DEG        = 180.0 / 3.14159265358979;
@@ -291,37 +292,35 @@ double GenRescue::rivalWeight(string id)
 //---------------------------------------------------------
 // Procedure: updateWeights()
 //   Refresh every swimmer's smoothed weight and flip the conceded set with
-//   hysteresis (concede below 0.3, reclaim above 0.5). If the conceded set
-//   changes, request a replan. Called once per Iterate().
+//   hysteresis around 0.5 (rival closer -> concede, we're closer -> reclaim).
+//   If the conceded set changes, request a replan. Called once per Iterate().
 
 void GenRescue::updateWeights()
 {
-  // Tuned CONSERVATIVE: only concede on strong evidence, and never abandon the
-  // swimmer we're already heading to (prevents U-turn thrash).
-  const double CONCEDE_LO = 0.15;  // concede only when very confident it's lost
-  const double RECLAIM_HI = 0.40;  // reclaim readily once it's no longer clear
+  // Strategy: concede a swimmer whenever the rival will reach it first (rival
+  // closer), and reclaim it once we are clearly the closer boat again. The
+  // weight w is ~0.5 at equal distance, >0.5 when WE are closer, <0.5 when the
+  // rival is closer (see rivalWeight). The dead-band around 0.5 plus smoothing
+  // prevents flip-flopping on near-ties / noisy reports.
+  //
+  // NOTE: there is deliberately NO "never abandon my current target" rule. If
+  // the rival is closer to the swimmer we are driving to, we DROP it and head
+  // to the nearest remaining one instead (Karolos's competition strategy).
+  const double CONCEDE_LO = 0.45;  // rival clearly closer -> concede
+  const double RECLAIM_HI = 0.55;  // we are clearly closer  -> reclaim
 
   bool changed = false;
-
-  // COMMITMENT: the first stop in the current tour is where we're already
-  // driving. Never concede it -- abandoning an active target causes U-turns
-  // and wasted travel (the very thing our route optimization avoids).
-  string current_target = (m_tour.empty() ? string("") : m_tour.front());
 
   map<string, XYPoint>::iterator q;
   for(q = m_swimmers.begin(); q != m_swimmers.end(); q++) {
     string id  = q->first;
     double raw = rivalWeight(id);
 
-    // Exponential smoothing: one noisy report can't yank the plan around.
+    // Exponential smoothing so one noisy report can't yank the plan around
+    // (0.45 latest / 0.55 previous -> reacts quickly but still filtered).
     double prev = (m_weight.count(id) ? m_weight[id] : 1.0);
-    double w    = 0.3*raw + 0.7*prev;
+    double w    = 0.45*raw + 0.55*prev;
     m_weight[id] = w;
-
-    if(id == current_target) {            // committed -> keep it eligible
-      if(m_conceded.erase(id) > 0) changed = true;
-      continue;
-    }
 
     bool conceded = (m_conceded.count(id) != 0);
     if(!conceded && (w < CONCEDE_LO))     { m_conceded.insert(id); changed = true; }
@@ -372,44 +371,12 @@ void GenRescue::postShortestPath()
         conceded_now.clear();
     }
 
-    // 1. Drop any planned stops that are no longer pending swimmers (rescued,
-    //    or otherwise gone) OR are now conceded, preserving the order of the
-    //    ones that remain.
-    vector<string> kept;
-    for(unsigned int i=0; i<m_tour.size(); i++)
-      if((m_swimmers.count(m_tour[i]) != 0) && (conceded_now.count(m_tour[i]) == 0))
-        kept.push_back(m_tour[i]);
-    m_tour = kept;
-
-    // 2. Slot any newly-known, NON-conceded swimmers into the existing route at
-    //    their cheapest insertion point (#1). This keeps the boat's current
-    //    heading and only diverts when it genuinely pays -- no disruptive rebuild.
-    map<string, XYPoint>::iterator q;
-    for(q = m_swimmers.begin(); q != m_swimmers.end(); q++) {
-      if(conceded_now.count(q->first) != 0)   // conceded -> don't plan it
-        continue;
-      bool present = false;
-      for(unsigned int i=0; i<m_tour.size(); i++)
-        if(m_tour[i] == q->first) { present = true; break; }
-      if(!present)
-        cheapestInsert(q->first);
-    }
-
-    // 3. Polish the order with 2-opt + Or-opt (strictly-shorter moves only, #2).
-    //    This is the NEW method's candidate route.
-    optimizeTour();
-    vector<string> cand_new = m_tour;
-
-    // 3b. Best-of-both safeguard: also compute the OLD method (greedy
-    //     nearest-neighbour + 2-opt) from scratch, and drive whichever full
-    //     route is shorter from the current position. Keeps every gain of the
-    //     new method while guaranteeing we are never worse than the old one.
-    vector<string> cand_old = greedyTour(conceded_now);
-    twoOptIds(cand_old);
-    if((tourLength(cand_old) + 1e-6) < tourLength(cand_new))
-      m_tour = cand_old;
-    else
-      m_tour = cand_new;
+    // 1. Plan: ALWAYS head to the nearest swimmer first, then nearest-from-there
+    //    (greedy nearest-neighbour from the boat's current position), skipping
+    //    any swimmer we are conceding to the rival. Recomputed only on a swimmer
+    //    or concession change (m_path_pending), so it doesn't thrash while the
+    //    boat is mid-leg between two stops.
+    m_tour = greedyTour(conceded_now);
 
     // 4. Materialise the ordered ids into the coordinate path we post/draw.
     m_path = XYSegList();
